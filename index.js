@@ -2,22 +2,35 @@ const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v9');
 const noblox = require('noblox.js');
-const { token, robloxCookie } = require('./config.json'); // Ensure this file exists and contains the token and robloxCookie
+const express = require('express');
+const http = require('http');
+const fs = require('fs');
+
+// Read configuration from config.json
+const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+const mycookie = config.robloxCookie;
+const mytoken = config.token;
+
+const app = express();
+const server = http.createServer(app);
+const port = process.env.PORT || 80;
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions
     ],
-    partials: ["CHANNEL", "MESSAGE"]
+    partials: ["CHANNEL", "MESSAGE", "REACTION"]
 });
 
 const CLIENT_ID = '1248877701910233119'; // Replace with your bot's client ID
 const GUILD_ID = '1249068686195556453';   // Replace with your guild ID
+const LEWWY_ID = '1249068686195556453';   // Replace with Lewwy's user ID
 
-const commandChannelMap = {};
+let lewwyRep = 0;
 
 const commands = [
     {
@@ -139,13 +152,79 @@ const commands = [
                 required: true
             }
         ]
+    },
+    {
+        name: 'test',
+        description: 'Replies with Test successful!'
+    },
+    {
+        name: 'reactrole',
+        description: 'Creates a reaction role message',
+        options: [
+            {
+                name: 'rolename',
+                type: 3, // Correct type for STRING is 3
+                description: 'The name of the role to assign',
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'mute',
+        description: 'Mutes a user in the server',
+        options: [
+            {
+                name: 'user',
+                type: 6, // Correct type for USER is 6
+                description: 'The user to mute',
+                required: true
+            },
+            {
+                name: 'reason',
+                type: 3, // Correct type for STRING is 3
+                description: 'The reason for muting the user',
+                required: false
+            }
+        ]
+    },
+    {
+        name: 'unmute',
+        description: 'Unmutes a user in the server',
+        options: [
+            {
+                name: 'user',
+                type: 6, // Correct type for USER is 6
+                description: 'The user to unmute',
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'postreview',
+        description: 'Posts a review message',
+        options: [
+            {
+                name: 'message',
+                type: 3, // Correct type for STRING is 3
+                description: 'The review message to post',
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'rep',
+        description: 'Shows the current reputation of Lewwy'
+    },
+    {
+        name: 'addrep',
+        description: 'Adds reputation to Lewwy'
     }
 ];
 
-const rest = new REST({ version: '9' }).setToken(token);
+const rest = new REST({ version: '9' }).setToken(mytoken);
 
 // Log into Roblox
-noblox.setCookie(robloxCookie)
+noblox.setCookie(mycookie)
     .then((user) => {
         console.log(`Logged in to Roblox as ${user.UserName}`);
     })
@@ -170,6 +249,7 @@ noblox.setCookie(robloxCookie)
 
 let currentCount = 0;
 let lastCounter = null;
+let countingGameActive = false;
 
 client.once('ready', () => {
     console.log(`Client has been initiated! ${client.user.username}`);
@@ -180,8 +260,8 @@ client.on('interactionCreate', async interaction => {
 
     const { commandName, options, channelId } = interaction;
 
-    if (commandName !== 'setcommandtochannel' && commandChannelMap[commandName] && commandChannelMap[commandName] !== channelId) {
-        return interaction.reply(`The command \`${commandName}\` can only be used in <#${commandChannelMap[commandName]}>.`);
+    if (interaction.guildId !== GUILD_ID) {
+        return interaction.reply("This command can only be used in the specified server.");
     }
 
     if (commandName === 'ping') {
@@ -287,6 +367,7 @@ client.on('interactionCreate', async interaction => {
     } else if (commandName === 'count') {
         currentCount = 0;
         lastCounter = null;
+        countingGameActive = true;
         await interaction.reply('Counting game has started! Start with 1.');
     } else if (commandName === 'getrank') {
         const username = options.getString('username');
@@ -307,18 +388,115 @@ client.on('interactionCreate', async interaction => {
 
         commandChannelMap[command] = channel.id;
         await interaction.reply(`The command \`${command}\` can now only be used in <#${channel.id}>.`);
+    } else if (commandName === 'reactrole') {
+        const roleName = options.getString('rolename');
+
+        const role = interaction.guild.roles.cache.find(r => r.name === roleName);
+        if (!role) {
+            return interaction.reply(`Role \`${roleName}\` not found.`);
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle('React Role')
+            .setDescription(`React to this message to get the \`${roleName}\` role!`)
+            .setColor('#00FF00');
+
+        const message = await interaction.reply({ embeds: [embed], fetchReply: true });
+        await message.react('👍');
+
+        const filter = (reaction, user) => {
+            return reaction.emoji.name === '👍' && !user.bot;
+        };
+
+        const collector = message.createReactionCollector({ filter });
+
+        collector.on('collect', async (reaction, user) => {
+            const member = reaction.message.guild.members.cache.get(user.id);
+            if (!member.roles.cache.has(role.id)) {
+                await member.roles.add(role);
+                await user.send(`You have been given the \`${roleName}\` role.`);
+                lewwyRep++; // Increment Lewwy's rep when someone reacts
+            } else {
+                await member.roles.remove(role);
+                await user.send(`The \`${roleName}\` role has been removed from you.`);
+            }
+        });
+    } else if (commandName === 'test') {
+        await interaction.reply('Test successful!');
+    } else if (commandName === 'mute') {
+        const user = options.getUser('user');
+        const reason = options.getString('reason') || 'No reason provided';
+
+        const member = interaction.guild.members.cache.get(user.id);
+        if (member) {
+            const muteRole = interaction.guild.roles.cache.find(role => role.name === 'Muted');
+            if (!muteRole) {
+                return interaction.reply('Mute role not found. Please create a role named `Muted`.');
+            }
+
+            await member.roles.add(muteRole);
+            await interaction.reply(`Muted ${user.tag} for: ${reason}`);
+            setTimeout(() => interaction.deleteReply(), 10000);
+        } else {
+            await interaction.reply('User not found.');
+            setTimeout(() => interaction.deleteReply(), 10000);
+        }
+    } else if (commandName === 'unmute') {
+        const user = options.getUser('user');
+
+        const member = interaction.guild.members.cache.get(user.id);
+        if (member) {
+            const muteRole = interaction.guild.roles.cache.find(role => role.name === 'Muted');
+            if (!muteRole) {
+                return interaction.reply('Mute role not found. Please create a role named `Muted`.');
+            }
+
+            await member.roles.remove(muteRole);
+            await interaction.reply(`Unmuted ${user.tag}`);
+            setTimeout(() => interaction.deleteReply(), 10000);
+        } else {
+            await interaction.reply('User not found.');
+            setTimeout(() => interaction.deleteReply(), 10000);
+        }
+    } else if (commandName === 'postreview') {
+        const reviewMessage = options.getString('message');
+
+        const embed = new EmbedBuilder()
+            .setTitle('New Review')
+            .setDescription(reviewMessage)
+            .setColor('#00FF00')
+            .setTimestamp();
+
+        const message = await interaction.reply({ embeds: [embed], fetchReply: true });
+        await message.react('👍');
+        lewwyRep++; // Increment Lewwy's rep when a review is posted
+
+        const filter = (reaction, user) => {
+            return reaction.emoji.name === '👍' && !user.bot;
+        };
+
+        const collector = message.createReactionCollector({ filter });
+
+        collector.on('collect', async (reaction, user) => {
+            if (!user.bot) {
+                lewwyRep++; // Increment Lewwy's rep when someone reacts
+            }
+        });
+    } else if (commandName === 'rep') {
+        await interaction.reply(`Lewwy's current rep: ${lewwyRep}`);
+    } else if (commandName === 'addrep') {
+        lewwyRep++;
+        await interaction.reply('Lewwy has been given 1 rep.');
     }
 });
 
 client.on('messageCreate', async (message) => {
-    if (message.content.toLowerCase() === "test") {
-        message.reply("Test successful!");
-    }
-
-    if (!message.author.bot && currentCount !== null) {
+    if (!message.author.bot && countingGameActive) {
         const count = parseInt(message.content);
 
-        if (isNaN(count) || count !== currentCount + 1 || (lastCounter && lastCounter.id === message.author.id)) {
+        if (isNaN(count)) return; // Ignore if it's not a number
+
+        if (count !== currentCount + 1 || (lastCounter && lastCounter.id === message.author.id)) {
             currentCount = 0;
             lastCounter = null;
             await message.reply('Count reset! Start over from 1.');
@@ -330,4 +508,13 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-client.login(token);
+client.login(mytoken);
+
+// Create an HTTP server to keep the bot running
+app.get('/', (req, res) => {
+    res.send('Bot is running');
+});
+
+server.listen(port, () => {
+    console.log(`Server is listening on port ${port}`);
+});
